@@ -11,12 +11,39 @@ const sources=["FB","FBN","VL","PR","CV","UP","NN","DD"];
 const blankSale={date:today(),customer_name:"",source:"FB",branch:"",package:"",total_amount:0,paid_amount:0,payment_method:"Tiền mặt",consultant:"",status:"Đã đăng ký",note:""};
 const blankLead={date:today(),name:"",phone:"",contact_status:"Mới",booking_date:"",branch:"",trainer:"",result:"",after_appointment:""};
 
-async function api(path,opts={}){const token=localStorage.getItem("crm_token");const r=await fetch(API+path,{...opts,headers:{"Content-Type":"application/json",...(token?{Authorization:"Bearer "+token}:{}),...(opts.headers||{})}});const data=await r.json();if(!r.ok)throw Error(data.error||"Có lỗi");return data}
+async function api(path,opts={}){
+ const token=localStorage.getItem("crm_token");
+ const r=await fetch(API+path,{...opts,headers:{"Content-Type":"application/json",...(token?{Authorization:"Bearer "+token}:{}),...(opts.headers||{})}});
+ const text=await r.text();
+ let data={};
+ try{data=text?JSON.parse(text):{}}catch{data={error:"Máy chủ trả về dữ liệu không hợp lệ"}}
+ if(r.status===401){
+   localStorage.removeItem("crm_token");
+   localStorage.removeItem("crm_user");
+   window.dispatchEvent(new Event("crm_auth_expired"));
+ }
+ if(!r.ok)throw Error(data.error||`Lỗi máy chủ (${r.status})`);
+ return data;
+}
+class ErrorBoundary extends React.Component{
+ constructor(props){super(props);this.state={error:null}}
+ static getDerivedStateFromError(error){return {error}}
+ componentDidCatch(error,info){console.error("CRM render error:",error,info)}
+ render(){
+   if(this.state.error)return <div className="app-error"><h2>CRM gặp lỗi hiển thị</h2><p>Phiên làm việc hoặc dữ liệu vừa tải có vấn đề. Hãy bấm nút bên dưới để đăng nhập lại.</p><button className="primary" onClick={()=>{localStorage.removeItem("crm_token");localStorage.removeItem("crm_user");location.reload()}}>Đăng nhập lại</button></div>;
+   return this.props.children;
+ }
+}
 function App(){
- const [user,setUser]=useState(()=>JSON.parse(localStorage.getItem("crm_user")||"null"));
+ const [user,setUser]=useState(()=>{try{return JSON.parse(localStorage.getItem("crm_user")||"null")}catch{return null}});
  const [login,setLogin]=useState({username:"admin",password:"kpmf0209@admin"});
+ useEffect(()=>{
+   const onExpired=()=>setUser(null);
+   window.addEventListener("crm_auth_expired",onExpired);
+   return ()=>window.removeEventListener("crm_auth_expired",onExpired);
+ },[]);
  if(!user)return <Login login={login} setLogin={setLogin} onLogin={u=>setUser(u)}/>;
- return <Shell user={user} logout={()=>{localStorage.clear();location.reload()}}/>;
+ return <ErrorBoundary><Shell user={user} logout={()=>{localStorage.removeItem("crm_token");localStorage.removeItem("crm_user");setUser(null)}}/></ErrorBoundary>;
 }
 function Login({login,setLogin,onLogin}){
  const [err,setErr]=useState("");
@@ -35,7 +62,7 @@ function Dashboard(){
  return <><div className="page-title"><div><h1>Dashboard tổng quan</h1><p>Doanh số, funnel và hiệu suất trong tháng hiện tại.</p></div></div><div className="cards">{cards.map(c=><div className="card" key={c[0]}><div className="icon">{c[2]}</div><span>{c[0]}</span><strong>{c[1]}</strong></div>)}</div><div className="grid2"><div className="panel chart"><h3>Doanh số theo tuần</h3><div className="chartbox"><ResponsiveContainer width="100%" height="100%"><BarChart data={d.weekly}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="week"/><YAxis tickFormatter={v=>`${Math.round(v/1000000)}M`}/><Tooltip formatter={v=>money(v)}/><Bar dataKey="sales" name="Doanh số" radius={[5,5,0,0]}/></BarChart></ResponsiveContainer></div></div><div className="panel"><h3>Funnel tháng</h3><div className="funnel"><div><span>Data nhận</span><b>{d.leads}</b></div><div><span>Book hẹn</span><b>{d.booked}</b></div><div><span>Đã ghé</span><b>{d.visited}</b></div><div><span>Đăng ký</span><b>{d.registered}</b></div></div><div className="rates"><span>Book/Data: <b>{d.leads?(d.booked/d.leads*100).toFixed(1):0}%</b></span><span>Ghé/Book: <b>{d.booked?(d.visited/d.booked*100).toFixed(1):0}%</b></span><span>ĐK/Ghé: <b>{d.visited?(d.registered/d.visited*100).toFixed(1):0}%</b></span></div></div></div></>
 }
 function Loading(){return <div className="loading">Đang tải dữ liệu...</div>}
-function Toolbar({onAdd,search,setSearch,children}){return <div className="toolbar"><input placeholder="🔎 Tìm kiếm..." value={search||""} onChange={e=>setSearch(e.target.value)}/>{children}<button className="primary" onClick={onAdd}>＋ Thêm mới</button></div>}
+function Toolbar({onAdd,search="",setSearch=()=>{},children}){return <div className="toolbar"><input placeholder="🔎 Tìm kiếm..." value={search||""} onChange={e=>setSearch(e.target.value)}/>{children}<button className="primary" onClick={onAdd}>＋ Thêm mới</button></div>}
 function Modal({title,onClose,children}){return <div className="modal-bg"><div className="modal"><div className="modal-head"><h3>{title}</h3><button onClick={onClose}>×</button></div>{children}</div></div>}
 function Sales({user}){
  const [rows,setRows]=useState([]),[q,setQ]=useState(""),[edit,setEdit]=useState(null);
@@ -56,4 +83,4 @@ function Checkins(){const [rows,setRows]=useState([]),[filter,setFilter]=useStat
 function Bonuses({user}){const [rows,setRows]=useState([]),[edit,setEdit]=useState(null);const load=()=>api("/bonuses").then(setRows);useEffect(load,[]);const save=async x=>{await api(x.id?"/bonuses/"+x.id:"/bonuses",{method:x.id?"PUT":"POST",body:JSON.stringify(x)});setEdit(null);load()};const del=async id=>{if(confirm("Xóa bonus?")){await api("/bonuses/"+id,{method:"DELETE"});load()}};return <><PageTitle title="Bonus" desc="Quản lý các khoản bonus."/><Toolbar onAdd={()=>setEdit({date:today(),bonus:"",amount:0})}/><div className="panel"><table><thead><tr><th>Ngày tháng</th><th>Bonus</th><th>Số tiền</th><th></th></tr></thead><tbody>{rows.map(x=><tr><td>{x.date}</td><td>{x.bonus}</td><td>{money(x.amount)}</td><td><button onClick={()=>setEdit(x)}>Sửa</button>{user.role==="Admin"&&<button className="danger" onClick={()=>del(x.id)}>Xóa</button>}</td></tr>)}</tbody></table></div>{edit&&<Modal title="Bonus" onClose={()=>setEdit(null)}><div className="formgrid"><label>Ngày<input type="date" value={edit.date} onChange={e=>setEdit({...edit,date:e.target.value})}/></label><label>Bonus<input value={edit.bonus} onChange={e=>setEdit({...edit,bonus:e.target.value})}/></label><label>Số tiền<input type="number" value={edit.amount} onChange={e=>setEdit({...edit,amount:Number(e.target.value)})}/></label></div><div className="modal-actions"><button onClick={()=>setEdit(null)}>Hủy</button><button className="primary" onClick={()=>save(edit)}>Lưu</button></div></Modal>}</>}
 function Holds({user}){const [rows,setRows]=useState([]);const load=()=>api("/holds").then(setRows);useEffect(load,[]);const update=async(x)=>{await api("/holds/"+x.id,{method:"PUT",body:JSON.stringify({months:x.months,status:x.status})});load()};return <><PageTitle title="Bảo lưu" desc="Quản lý danh sách khách đang bảo lưu."/><div className="panel"><table><thead><tr><th>Khách hàng</th><th>Gói tập</th><th>Chi nhánh</th><th>Tư vấn</th><th>Ngày đăng ký</th><th>Số tháng</th><th>Trạng thái</th><th></th></tr></thead><tbody>{rows.map(x=><tr><td>{x.customer_name}</td><td>{x.package}</td><td>{x.branch}</td><td>{x.consultant}</td><td>{x.date}</td><td><input className="small-input" type="number" value={x.months} onChange={e=>setRows(rows.map(r=>r.id===x.id?{...r,months:Number(e.target.value)}:r))}/></td><td><select value={x.status} onChange={e=>setRows(rows.map(r=>r.id===x.id?{...r,status:e.target.value}:r))}><option>Đang bảo lưu</option><option>Đã kết thúc</option></select></td><td><button onClick={()=>update(x)}>Lưu</button></td></tr>)}</tbody></table></div></>}
 function Targets(){const [rows,setRows]=useState([]),[x,setX]=useState({period_type:"month",period:new Date().toISOString().slice(0,7),target:0});const load=()=>api("/targets").then(setRows);useEffect(load,[]);const save=async()=>{await api("/targets",{method:"POST",body:JSON.stringify(x)});load()};return <><PageTitle title="Target Tổng" desc="Quản lý target theo tháng → tuần → ngày."/><div className="panel target-form"><select value={x.period_type} onChange={e=>setX({...x,period_type:e.target.value})}><option value="month">Tháng</option><option value="week">Tuần</option><option value="day">Ngày</option></select><input value={x.period} onChange={e=>setX({...x,period:e.target.value})}/><input type="number" placeholder="Target" value={x.target} onChange={e=>setX({...x,target:Number(e.target.value)})}/><button className="primary" onClick={save}>Lưu target</button></div><div className="panel"><table><thead><tr><th>Thời gian</th><th>Loại</th><th>Target</th></tr></thead><tbody>{rows.map(r=><tr><td>{r.period}</td><td>{r.period_type}</td><td>{money(r.target)}</td></tr>)}</tbody></table></div></>}
-createRoot(document.getElementById("root")).render(<App/>);
+createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
